@@ -353,10 +353,46 @@ function isFirebaseConfigComplete() {
   return Object.values(FIREBASE_CONFIG).every(v => typeof v === 'string' && v.trim() !== '');
 }
 
+function buildClaimedCells() {
+  const claims = [];
+  for (const [key, owner] of Object.entries(cellOwners)) {
+    if (!owner) continue;
+    const [rowText, colText] = key.split('-');
+    claims.push({
+      row: Number(rowText),
+      col: Number(colText),
+      owner: Number(owner)
+    });
+  }
+  return claims;
+}
+
+function buildCellOwnersFromClaims(claims) {
+  const normalized = {};
+  for (let r = 1; r <= ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      normalized[`${r}-${c}`] = null;
+    }
+  }
+
+  if (!Array.isArray(claims)) return normalized;
+  for (const claim of claims) {
+    const row = Number(claim?.row);
+    const col = Number(claim?.col);
+    const owner = Number(claim?.owner);
+    const key = `${row}-${col}`;
+    if (!Object.prototype.hasOwnProperty.call(normalized, key)) continue;
+    if (!PLAYERS.some(p => p.id === owner)) continue;
+    normalized[key] = owner;
+  }
+
+  return normalized;
+}
+
 function publishStateToCloud() {
   if (!dbRef || isApplyingRemoteUpdate) return;
   dbRef.set({
-    cellOwners,
+    claimedCells: buildClaimedCells(),
     updatedAt: Date.now(),
     updatedBy: SESSION_ID,
     resetAt: lastResetAt || null
@@ -369,7 +405,7 @@ function publishResetToCloud() {
   if (!dbRef || isApplyingRemoteUpdate) return;
   lastResetAt = Date.now();
   dbRef.set({
-    cellOwners,
+    claimedCells: [],
     updatedAt: lastResetAt,
     updatedBy: SESSION_ID,
     resetAt: lastResetAt
@@ -400,6 +436,23 @@ function applyRemoteCellOwners(remoteCellOwners) {
   rebuildPlayerCellsFromOwners();
   refreshUI();
   isApplyingRemoteUpdate = false;
+}
+
+function applyRemoteSnapshot(data) {
+  if (!data || typeof data !== 'object') return;
+
+  if (Array.isArray(data.claimedCells)) {
+    isApplyingRemoteUpdate = true;
+    cellOwners = buildCellOwnersFromClaims(data.claimedCells);
+    rebuildPlayerCellsFromOwners();
+    refreshUI();
+    isApplyingRemoteUpdate = false;
+    return;
+  }
+
+  if (data.cellOwners && typeof data.cellOwners === 'object') {
+    applyRemoteCellOwners(data.cellOwners);
+  }
 }
 
 function initRealtimeSync() {
@@ -439,7 +492,7 @@ function initRealtimeSync() {
 
     dbRef.on('value', snap => {
       const data = snap.val();
-      if (!data || !data.cellOwners) return;
+      if (!data) return;
 
       const remoteResetAt = Number(data.resetAt || 0);
       if (remoteResetAt > lastResetAt) {
@@ -447,7 +500,7 @@ function initRealtimeSync() {
       }
 
       if (data.updatedBy === SESSION_ID) return;
-      applyRemoteCellOwners(data.cellOwners);
+      applyRemoteSnapshot(data);
       setSyncStatus('收到其他使用者更新', true);
     });
 
@@ -455,7 +508,7 @@ function initRealtimeSync() {
       if (snap.exists()) {
         const data = snap.val();
         lastResetAt = Number(data?.resetAt || 0);
-        if (data?.cellOwners) applyRemoteCellOwners(data.cellOwners);
+        applyRemoteSnapshot(data);
         setSyncStatus('已載入雲端狀態', true);
       } else {
         publishStateToCloud();
