@@ -447,12 +447,19 @@ function buildCellOwnersFromClaims(claims) {
 
 function publishStateToCloud() {
   if (!dbRef || isApplyingRemoteUpdate) return;
-  dbRef.set({
+  // 只儲存有被鎖定的顏色（Firebase 會刪除 null 值的 key）
+  const locksToStore = {};
+  for (const [id, code] of Object.entries(colorLocks)) {
+    if (code) locksToStore[id] = code;
+  }
+  const payload = {
     claimedCells: buildClaimedCells(),
     updatedAt: Date.now(),
     updatedBy: SESSION_ID,
     resetAt: lastResetAt || null
-  }).catch(() => {
+  };
+  if (Object.keys(locksToStore).length) payload.colorLocks = locksToStore;
+  dbRef.set(payload).catch(() => {
     setSyncStatus('同步失敗，請檢查 Firebase 權限與設定', false);
   });
 }
@@ -501,6 +508,12 @@ function applyRemoteSnapshot(data) {
     isApplyingRemoteUpdate = true;
     cellOwners = buildCellOwnersFromClaims(data.claimedCells);
     rebuildPlayerCellsFromOwners();
+    // 同步顏色鎖定：只存非 null 的 lock，不存在的 key 視為解鎖
+    colorLocks = normalizeColorLocks(data.colorLocks || {});
+    // 若本機選中的顏色剛被他人鎖定，強制取消選取
+    if (currentPlayer !== null && isColorLockedByOther(currentPlayer)) {
+      currentPlayer = null;
+    }
     refreshUI();
     isApplyingRemoteUpdate = false;
     return;
@@ -524,6 +537,18 @@ function consumeRemoteState(data) {
 
   if (!hasNewUpdate && !hasNewReset) return false;
   if (data.updatedBy === SESSION_ID) return false;
+
+  // Firebase 會將空陣列 [] 存成 null 並刪除該欄位
+  // 當有新的 resetAt 且 claimedCells 為 null/空時，直接本地清空，不依賴欄位內容
+  const isEmpty = !data.claimedCells ||
+    (Array.isArray(data.claimedCells) && data.claimedCells.length === 0);
+  if (hasNewReset && isEmpty) {
+    isApplyingRemoteUpdate = true;
+    initState();
+    refreshUI();
+    isApplyingRemoteUpdate = false;
+    return true;
+  }
 
   applyRemoteSnapshot(data);
   return true;
@@ -699,8 +724,26 @@ function processCellClick(row, col) {
 //  事件處理（邏輯 + UI 更新）
 // ══════════════════════════════════════════════
 function onPlayerClick(playerId) {
+  // 被其他人鎖定的顏色禁止選取
+  if (isColorLockedByOther(playerId)) {
+    setStatus('⛔ 此顏色已被其他玩家選用，無法選取！', null);
+    return;
+  }
+
+  const prevPlayer = currentPlayer;
   selectPlayer(playerId);
+
+  // 切換或取消選取時，釋放舊顏色的鎖定
+  if (prevPlayer !== null && prevPlayer !== currentPlayer) {
+    releaseColorLock(prevPlayer);
+  }
+  // 鎖定新選中的顏色
+  if (currentPlayer !== null) {
+    acquireColorLock(currentPlayer);
+  }
+
   refreshUI();
+  publishStateToCloud();
 }
 
 function onCellClick(row, col) {
@@ -725,6 +768,21 @@ function resetGame() {
   initState();
   refreshUI();
   publishResetToCloud();
+  // 重置後 1 秒內主動拉取 3 次，確保重置已寫入雲端
+  let poll = 0;
+  const quickTimer = setInterval(() => {
+    poll++;
+    if (dbRef) {
+      dbRef.once('value').then(snap => {
+        if (!snap.exists()) return;
+        const data = snap.val();
+        if (Number(data?.resetAt || 0) >= lastResetAt) {
+          setSyncStatus('重置已確認同步', true);
+        }
+      }).catch(() => {});
+    }
+    if (poll >= 3) clearInterval(quickTimer);
+  }, 333);
 }
 
 // ══════════════════════════════════════════════
@@ -736,10 +794,16 @@ function refreshUI() {
     const btn = document.getElementById(`player-btn-${p.id}`);
     const tag = document.getElementById(`tag-${p.id}`);
     if (!btn) continue;
+    const lockedByOther = isColorLockedByOther(p.id);
+    btn.disabled = lockedByOther;
     btn.classList.toggle('active', currentPlayer === p.id);
     if (tag) {
-      const count = Object.keys(playerCells[p.id]).length;
-      tag.textContent = count === 0 ? '未佔格' : `已佔 ${count} 格`;
+      if (lockedByOther) {
+        tag.textContent = '已被選用';
+      } else {
+        const count = Object.keys(playerCells[p.id]).length;
+        tag.textContent = count === 0 ? '未佔格' : `已佔 ${count} 格`;
+      }
     }
   }
 
