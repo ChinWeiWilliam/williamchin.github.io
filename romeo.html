@@ -302,6 +302,8 @@ let isApplyingRemoteUpdate = false;
 let onlineCount = 1;
 let isSyncConnected = false;
 let lastResetAt = 0;
+let lastSeenUpdatedAt = 0;
+let statePollingTimer = null;
 
 /** 初始化 / 重置所有狀態（不更新 UI） */
 function initState() {
@@ -455,6 +457,39 @@ function applyRemoteSnapshot(data) {
   }
 }
 
+function consumeRemoteState(data) {
+  if (!data || typeof data !== 'object') return false;
+
+  const remoteUpdatedAt = Number(data.updatedAt || 0);
+  const remoteResetAt = Number(data.resetAt || 0);
+  const hasNewUpdate = remoteUpdatedAt > lastSeenUpdatedAt;
+  const hasNewReset = remoteResetAt > lastResetAt;
+
+  if (hasNewUpdate) lastSeenUpdatedAt = remoteUpdatedAt;
+  if (hasNewReset) lastResetAt = remoteResetAt;
+
+  if (!hasNewUpdate && !hasNewReset) return false;
+  if (data.updatedBy === SESSION_ID) return false;
+
+  applyRemoteSnapshot(data);
+  return true;
+}
+
+function startStatePolling() {
+  if (!dbRef) return;
+  if (statePollingTimer) clearInterval(statePollingTimer);
+
+  statePollingTimer = setInterval(() => {
+    dbRef.once('value').then(snap => {
+      if (!snap.exists()) return;
+      const changed = consumeRemoteState(snap.val());
+      if (changed) setSyncStatus('輪詢收到最新狀態', true);
+    }).catch(() => {
+      setSyncStatus('輪詢同步失敗，稍後重試', false);
+    });
+  }, 5000);
+}
+
 function initRealtimeSync() {
   if (!isFirebaseConfigComplete()) {
     setSyncStatus('未填 Firebase 設定，使用本機模式', false);
@@ -493,28 +528,22 @@ function initRealtimeSync() {
     dbRef.on('value', snap => {
       const data = snap.val();
       if (!data) return;
-
-      const remoteResetAt = Number(data.resetAt || 0);
-      if (remoteResetAt > lastResetAt) {
-        lastResetAt = remoteResetAt;
-      }
-
-      if (data.updatedBy === SESSION_ID) return;
-      applyRemoteSnapshot(data);
-      setSyncStatus('收到其他使用者更新', true);
+      const changed = consumeRemoteState(data);
+      if (changed) setSyncStatus('收到其他使用者更新', true);
     });
 
     dbRef.once('value').then(snap => {
       if (snap.exists()) {
         const data = snap.val();
-        lastResetAt = Number(data?.resetAt || 0);
-        applyRemoteSnapshot(data);
+        consumeRemoteState(data);
         setSyncStatus('已載入雲端狀態', true);
       } else {
         publishStateToCloud();
         setSyncStatus('已建立新房間狀態', true);
       }
     });
+
+    startStatePolling();
   } catch {
     setSyncStatus('Firebase 初始化失敗，使用本機模式', false);
   }
