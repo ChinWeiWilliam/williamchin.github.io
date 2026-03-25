@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Romeo - 四人格子遊戲</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', Arial, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 30px 20px;
+      gap: 20px;
+    }
+
+    .card {
+      background: #fff;
+      border-radius: 16px;
+      padding: 24px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+      width: 100%;
+      max-width: 560px;
+    }
+
+    h1 {
+      text-align: center;
+      color: #333;
+      margin-bottom: 20px;
+      font-size: 26px;
+      letter-spacing: 2px;
+    }
+
+    /* ── 玩家按鈕 ── */
+    .section-title {
+      font-size: 12px;
+      color: #888;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 10px;
+    }
+
+    .player-controls {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 20px;
+    }
+
+    .player-btn {
+      flex: 1;
+      padding: 12px 6px 8px;
+      border: 3px solid transparent;
+      border-radius: 10px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: bold;
+      color: #fff;
+      text-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+      transition: transform .2s, box-shadow .2s, border-color .2s;
+      text-align: center;
+      user-select: none;
+      line-height: 1.4;
+    }
+
+    .player-btn:hover { filter: brightness(1.1); }
+
+    .player-btn.active {
+      border-color: #222;
+      transform: translateY(-4px);
+      box-shadow: 0 8px 18px rgba(0, 0, 0, 0.35);
+    }
+
+    .player-btn .cell-tag {
+      display: block;
+      font-size: 11px;
+      font-weight: normal;
+      opacity: .9;
+      margin-top: 3px;
+    }
+
+    /* ── 格子 ── */
+    .grid-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin: 4px 0;
+    }
+
+    .row-label {
+      width: 30px;
+      height: 52px;
+      background: #f4f4f4;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: bold;
+      font-size: 13px;
+      color: #777;
+      flex-shrink: 0;
+    }
+
+    .cell {
+      flex: 1;
+      height: 52px;
+      border: 2px solid #ddd;
+      background: #fff;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: transform .15s, box-shadow .15s, border-color .15s;
+    }
+
+    .cell:hover {
+      border-color: #aaa;
+      transform: scale(1.04);
+      box-shadow: 0 3px 10px rgba(0, 0, 0, 0.15);
+    }
+
+    .cell.owned { border-color: rgba(0, 0, 0, 0.18); }
+
+    /* ── 狀態列 ── */
+    .status-bar {
+      margin-top: 16px;
+      padding: 10px 14px;
+      background: #f8f9fa;
+      border-radius: 8px;
+      font-size: 13px;
+      color: #555;
+      text-align: center;
+      border-left: 4px solid #ddd;
+      transition: border-color .2s;
+    }
+
+    /* ── 重置按鈕 ── */
+    .actions { margin-top: 14px; }
+
+    .reset-btn {
+      width: 100%;
+      padding: 10px;
+      background: #f0f0f0;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 14px;
+      color: #555;
+      transition: background .2s;
+    }
+
+    .reset-btn:hover { background: #e0e0e0; }
+
+    /* ── 測試區塊 ── */
+    .test-card {
+      background: #fff;
+      border-radius: 16px;
+      padding: 20px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+      width: 100%;
+      max-width: 560px;
+    }
+
+    .test-card h2 {
+      font-size: 15px;
+      color: #333;
+      margin-bottom: 12px;
+    }
+
+    .test-run-btn {
+      padding: 10px 22px;
+      background: #2c2c2c;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 14px;
+      transition: background .2s;
+    }
+
+    .test-run-btn:hover { background: #444; }
+
+    .test-results {
+      display: none;
+      margin-top: 12px;
+      background: #1a1a2e;
+      color: #ddd;
+      padding: 16px;
+      border-radius: 8px;
+      font-family: 'Consolas', 'Courier New', monospace;
+      font-size: 13px;
+      max-height: 380px;
+      overflow-y: auto;
+      line-height: 1.8;
+    }
+
+    .t-pass    { color: #6BCB77; }
+    .t-fail    { color: #FF6B6B; }
+    .t-section { color: #4D96FF; font-weight: bold; margin-top: 8px; }
+    .t-summary {
+      color: #FFD166;
+      font-weight: bold;
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid #333;
+    }
+  </style>
+</head>
+<body>
+
+<!-- ════════════════════ 遊戲主畫面 ════════════════════ -->
+<div class="card">
+  <h1>🎮 Romeo</h1>
+
+  <div class="section-title">選擇玩家</div>
+  <div class="player-controls" id="playerControls"></div>
+
+  <div class="section-title">遊戲格子（共 10 層，每層 4 格）</div>
+  <div id="gridContainer"></div>
+
+  <div class="status-bar" id="statusBar">請先選擇玩家</div>
+
+  <div class="actions">
+    <button class="reset-btn" id="resetBtn">🔄 重置遊戲</button>
+  </div>
+</div>
+
+<!-- ════════════════════ 測試面板 ════════════════════ -->
+<div class="test-card">
+  <h2>🧪 自動化測試</h2>
+  <button class="test-run-btn" id="testRunBtn">執行所有測試</button>
+  <div class="test-results" id="testResults"></div>
+</div>
+
+<script>
+// ══════════════════════════════════════════════
+//  設定
+// ══════════════════════════════════════════════
+const PLAYERS = [
+  { id: 1, name: '玩家 1', color: '#E74C3C' },
+  { id: 2, name: '玩家 2', color: '#3498DB' },
+  { id: 3, name: '玩家 3', color: '#2ECC71' },
+  { id: 4, name: '玩家 4', color: '#F39C12' }
+];
+const ROWS = 10;
+const COLS = 4;
+
+// ══════════════════════════════════════════════
+//  狀態
+// ══════════════════════════════════════════════
+let currentPlayer = null;  // 目前選中的玩家 id（或 null）
+let cellOwners    = {};    // { "row-col": playerId | null }
+let playerCells   = {};    // { playerId: "row-col" | null }
+
+/** 初始化 / 重置所有狀態（不更新 UI） */
+function initState() {
+  currentPlayer = null;
+  cellOwners    = {};
+  playerCells   = {};
+  for (let r = 1; r <= ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      cellOwners[`${r}-${c}`] = null;
+    }
+  }
+  for (const p of PLAYERS) playerCells[p.id] = {};
+}
+
+// ══════════════════════════════════════════════
+//  UI 建構（只執行一次）
+// ══════════════════════════════════════════════
+function buildUI() {
+  // 玩家按鈕
+  const ctrl = document.getElementById('playerControls');
+  for (const p of PLAYERS) {
+    const btn = document.createElement('button');
+    btn.className        = 'player-btn';
+    btn.id               = `player-btn-${p.id}`;
+    btn.style.backgroundColor = p.color;
+    btn.innerHTML        = `${p.name}<span class="cell-tag" id="tag-${p.id}">未佔格</span>`;
+    btn.addEventListener('click', () => onPlayerClick(p.id));
+    ctrl.appendChild(btn);
+  }
+
+  // 格子（第 10 層在最上方，第 1 層在最下方）
+  const grid = document.getElementById('gridContainer');
+  for (let r = ROWS; r >= 1; r--) {
+    const row = document.createElement('div');
+    row.className = 'grid-row';
+
+    const lbl = document.createElement('div');
+    lbl.className   = 'row-label';
+    lbl.textContent = r;
+    row.appendChild(lbl);
+
+    for (let c = 0; c < COLS; c++) {
+      const cell = document.createElement('div');
+      cell.className   = 'cell';
+      cell.id          = `cell-${r}-${c}`;
+      cell.dataset.row = r;
+      cell.dataset.col = c;
+      cell.addEventListener('click', () => onCellClick(r, c));
+      row.appendChild(cell);
+    }
+
+    grid.appendChild(row);
+  }
+
+  // 按鈕事件
+  document.getElementById('resetBtn').addEventListener('click', resetGame);
+  document.getElementById('testRunBtn').addEventListener('click', runTests);
+}
+
+// ══════════════════════════════════════════════
+//  核心邏輯（純狀態操作，不涉及 DOM）
+// ══════════════════════════════════════════════
+
+/**
+ * 切換選中玩家
+ * @param {number} playerId
+ */
+function selectPlayer(playerId) {
+  currentPlayer = (currentPlayer === playerId) ? null : playerId;
+}
+
+/**
+ * 處理格子點擊邏輯（不直接操作 DOM）
+ * @param {number} row 1~10
+ * @param {number} col 0~3
+ * @returns {'deselect'|'claim'|'move'|'blocked'|'no-player'} 操作結果
+ */
+function processCellClick(row, col) {
+  if (currentPlayer === null) return 'no-player';
+
+  const key   = `${row}-${col}`;
+  const owner = cellOwners[key];
+
+  if (owner === currentPlayer) {
+    // 再次點選自己在同層的格子 → 取消
+    cellOwners[key] = null;
+    delete playerCells[currentPlayer][row];
+    return 'deselect';
+  }
+
+  if (owner !== null) {
+    // 已被其他玩家佔用
+    return 'blocked';
+  }
+
+  // 空格子 → 佔有（若同層已有舊格則釋放，不同層保留）
+  const prevCol = playerCells[currentPlayer][row];
+  const hasPrev = prevCol !== undefined;
+  if (hasPrev) {
+    cellOwners[`${row}-${prevCol}`] = null;
+  }
+  cellOwners[key]                 = currentPlayer;
+  playerCells[currentPlayer][row] = col;
+  return hasPrev ? 'move' : 'claim';
+}
+
+// ══════════════════════════════════════════════
+//  事件處理（邏輯 + UI 更新）
+// ══════════════════════════════════════════════
+function onPlayerClick(playerId) {
+  selectPlayer(playerId);
+  refreshUI();
+}
+
+function onCellClick(row, col) {
+  const result = processCellClick(row, col);
+
+  if (result === 'no-player') {
+    setStatus('⚠️ 請先選擇玩家！', null);
+    return;
+  }
+  if (result === 'blocked') {
+    const owner = cellOwners[`${row}-${col}`];
+    const name  = PLAYERS.find(p => p.id === owner)?.name;
+    setStatus(`⛔ 此格已被 ${name} 佔用！`, null);
+    return;
+  }
+
+  refreshUI();
+}
+
+function resetGame() {
+  initState();
+  refreshUI();
+}
+
+// ══════════════════════════════════════════════
+//  UI 更新
+// ══════════════════════════════════════════════
+function refreshUI() {
+  // 玩家按鈕
+  for (const p of PLAYERS) {
+    const btn = document.getElementById(`player-btn-${p.id}`);
+    const tag = document.getElementById(`tag-${p.id}`);
+    if (!btn) continue;
+    btn.classList.toggle('active', currentPlayer === p.id);
+    if (tag) {
+      const count = Object.keys(playerCells[p.id]).length;
+      tag.textContent = count === 0 ? '未佔格' : `已佔 ${count} 格`;
+    }
+  }
+
+  // 所有格子顏色
+  for (let r = 1; r <= ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const owner = cellOwners[`${r}-${c}`];
+      const color = owner ? PLAYERS.find(p => p.id === owner)?.color : null;
+      setCellVisual(r, c, color);
+    }
+  }
+
+  // 狀態列
+  if (currentPlayer === null) {
+    setStatus('請選擇玩家後點選格子', null);
+  } else {
+    const p     = PLAYERS.find(pl => pl.id === currentPlayer);
+    const count = Object.keys(playerCells[currentPlayer]).length;
+    if (count > 0) {
+      setStatus(`${p.name} — 已佔 ${count} 格，每層可各佔一格`, p.color);
+    } else {
+      setStatus(`${p.name} 已選取，請點選格子`, p.color);
+    }
+  }
+}
+
+function setCellVisual(row, col, color) {
+  const el = document.getElementById(`cell-${row}-${col}`);
+  if (!el) return;
+  el.style.backgroundColor = color || '#fff';
+  el.classList.toggle('owned', !!color);
+}
+
+function setStatus(msg, color) {
+  const bar = document.getElementById('statusBar');
+  if (!bar) return;
+  bar.textContent              = msg;
+  bar.style.borderLeftColor   = color || '#ddd';
+}
+
+// ══════════════════════════════════════════════
+//  自動化測試
+// ══════════════════════════════════════════════
+function runTests() {
+  const out = [];
+  let passed = 0, failed = 0;
+
+  // 測試執行期間暫存目前的遊戲狀態
+  const snapshot = {
+    currentPlayer,
+    cellOwners : JSON.parse(JSON.stringify(cellOwners)),
+    playerCells: JSON.parse(JSON.stringify(playerCells))
+  };
+
+  function section(title) {
+    out.push(`<div class="t-section">▶ ${title}</div>`);
+  }
+
+  function assert(desc, cond) {
+    const ok = !!cond;
+    out.push(`<div class="t-${ok ? 'pass' : 'fail'}">${ok ? '✓' : '✗'} ${desc}</div>`);
+    if (ok) passed++; else failed++;
+  }
+
+  // ── 1. 初始狀態 ──────────────────────────────
+  initState();
+  section('初始狀態驗證');
+
+  assert('所有格子初始為空',
+    Object.values(cellOwners).every(v => v === null));
+  assert('所有玩家初始未佔格',
+    PLAYERS.every(p => playerCells[p.id] === null));
+  assert('初始無選中玩家', currentPlayer === null);
+  assert(`格子總數正確（${ROWS * COLS} 格）`,
+    Object.keys(cellOwners).length === ROWS * COLS);
+
+  // ── 2. 玩家選取 ──────────────────────────────
+  section('玩家選取功能');
+
+  selectPlayer(1);
+  assert('選取玩家 1 後 currentPlayer 為 1', currentPlayer === 1);
+  selectPlayer(1);
+  assert('再次點選同一玩家可取消選取', currentPlayer === null);
+  selectPlayer(2);
+  assert('選取玩家 2', currentPlayer === 2);
+  selectPlayer(3);
+  assert('切換至玩家 3（前一個自動取消）', currentPlayer === 3);
+
+  // ── 3. 基本佔格 ──────────────────────────────
+  section('佔格基本功能');
+
+  initState(); currentPlayer = 1;
+  assert('佔格前 (1,0) 為空', cellOwners['1-0'] === null);
+  processCellClick(1, 0);
+  assert('玩家 1 佔有格子 (1,0)', cellOwners['1-0'] === 1);
+  assert('玩家 1 在第 1 層記錄為欄位 0', playerCells[1][1] === 0);
+
+  currentPlayer = 2; processCellClick(3, 2);
+  assert('玩家 2 佔有格子 (3,2)', cellOwners['3-2'] === 2);
+
+  currentPlayer = 3; processCellClick(10, 3);
+  assert('玩家 3 可佔有第 10 層格子', cellOwners['10-3'] === 3);
+
+  currentPlayer = 4; processCellClick(1, 3);
+  assert('玩家 4 可佔有第 1 層格子', cellOwners['1-3'] === 4);
+
+  // ── 4. 每層只能佔一格 ────────────────────────
+  section('每層只能佔一格限制');
+
+  initState(); currentPlayer = 1;
+  processCellClick(1, 0);
+  const r1 = processCellClick(1, 2);
+  assert('同層換格時回傳 "move"', r1 === 'move');
+  assert('同層原格子 (1,0) 已釋放', cellOwners['1-0'] === null);
+  assert('同層新格子 (1,2) 屬於玩家 1', cellOwners['1-2'] === 1);
+  assert('playerCells[1][1] 更新為 2', playerCells[1][1] === 2);
+
+  const r1b = processCellClick(2, 3);
+  assert('不同層佔格時回傳 "claim"', r1b === 'claim');
+  assert('第 1 層格子 (1,2) 仍保留', cellOwners['1-2'] === 1);
+  assert('第 2 層格子 (2,3) 屬於玩家 1', cellOwners['2-3'] === 1);
+  assert('玩家 1 共佔兩層格子', Object.keys(playerCells[1]).length === 2);
+
+  // ── 5. 取消佔格 ──────────────────────────────
+  section('取消佔格（點選自己的格子）');
+
+  initState(); currentPlayer = 1;
+  processCellClick(4, 2);
+  const r2 = processCellClick(4, 2);
+  assert('再次點選自己的格子回傳 "deselect"', r2 === 'deselect');
+  assert('格子 (4,2) 回到空白', cellOwners['4-2'] === null);
+  assert('playerCells[1] 第 4 層記錄清空', playerCells[1][4] === undefined);
+
+  // ── 6. 無法搶奪他人格子 ──────────────────────
+  section('格子保護機制');
+
+  initState();
+  currentPlayer = 1; processCellClick(6, 1);
+  currentPlayer = 2;
+  const r3 = processCellClick(6, 1);
+  assert('嘗試搶奪他人格子回傳 "blocked"', r3 === 'blocked');
+  assert('玩家 1 的格子未被搶走', cellOwners['6-1'] === 1);
+  assert('玩家 2 依然未佔格', Object.keys(playerCells[2]).length === 0);
+  assert('玩家 1 的格子記錄不受影響', playerCells[1][6] === 1);
+
+  // ── 7. 四玩家同時佔格 ────────────────────────
+  section('四玩家同時佔格');
+
+  initState();
+  for (let i = 0; i < PLAYERS.length; i++) {
+    currentPlayer = PLAYERS[i].id;
+    processCellClick(5, i);
+  }
+  assert('玩家 1 佔 (5,0)', cellOwners['5-0'] === 1);
+  assert('玩家 2 佔 (5,1)', cellOwners['5-1'] === 2);
+  assert('玩家 3 佔 (5,2)', cellOwners['5-2'] === 3);
+  assert('玩家 4 佔 (5,3)', cellOwners['5-3'] === 4);
+  assert('第 5 層共 4 格被佔滿',
+    [0, 1, 2, 3].every(c => cellOwners[`5-${c}`] !== null));
+
+  // ── 8. 邊界值 ─────────────────────────────────
+  section('邊界值測試');
+
+  initState(); currentPlayer = 1;
+  processCellClick(1, 0);
+  assert('最左下角 (1,0) 可被佔有', cellOwners['1-0'] === 1);
+
+  initState(); currentPlayer = 2;
+  processCellClick(10, 3);
+  assert('最右上角 (10,3) 可被佔有', cellOwners['10-3'] === 2);
+
+  // ── 9. 無玩家時點格 ──────────────────────────
+  section('無選中玩家時點格');
+
+  initState(); currentPlayer = null;
+  const r4 = processCellClick(5, 0);
+  assert('未選玩家時點格回傳 "no-player"', r4 === 'no-player');
+  assert('格子狀態不受影響', cellOwners['5-0'] === null);
+
+  // ── 10. 重置功能 ──────────────────────────────
+  section('重置功能');
+
+  currentPlayer = 3; processCellClick(3, 1);
+  initState();
+  assert('重置後所有格子為空',
+    Object.values(cellOwners).every(v => v === null));
+  assert('重置後所有玩家格子記錄清空',
+    PLAYERS.every(p => playerCells[p.id] === null));
+  assert('重置後無選中玩家', currentPlayer === null);
+
+  // ═══ 還原遊戲狀態 ════════════════════════════
+  currentPlayer = snapshot.currentPlayer;
+  Object.assign(cellOwners,  snapshot.cellOwners);
+  Object.assign(playerCells, snapshot.playerCells);
+  refreshUI();
+
+  // ═══ 顯示結果 ════════════════════════════════
+  const emoji   = failed === 0 ? '🎉 全部通過！' : '⚠️ 部分測試失敗！';
+  const summary = `<div class="t-summary">
+    測試結果：${passed} 通過 ✓ ｜ ${failed} 失敗 ✗ ｜ 共 ${passed + failed} 項　${emoji}
+  </div>`;
+
+  const container = document.getElementById('testResults');
+  container.style.display = 'block';
+  container.innerHTML     = out.join('') + summary;
+}
+
+// ══════════════════════════════════════════════
+//  啟動
+// ══════════════════════════════════════════════
+initState();
+buildUI();
+</script>
+</body>
+</html>
