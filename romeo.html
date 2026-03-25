@@ -289,7 +289,10 @@ let currentPlayer = null;  // 目前選中的玩家 id（或 null）
 let cellOwners    = {};    // { "row-col": playerId | null }
 let playerCells   = {};    // { playerId: "row-col" | null }
 let dbRef         = null;
+let roomPresenceRef = null;
 let isApplyingRemoteUpdate = false;
+let onlineCount = 1;
+let isSyncConnected = false;
 
 /** 初始化 / 重置所有狀態（不更新 UI） */
 function initState() {
@@ -327,8 +330,14 @@ function getSyncStatusElement() {
 function setSyncStatus(message, isConnected) {
   const el = getSyncStatusElement();
   if (!el) return;
+  if (typeof isConnected === 'boolean') isSyncConnected = isConnected;
   const flag = isConnected ? '已連線' : '未連線';
-  el.innerHTML = `同步狀態：<strong>${flag}</strong>｜${message}`;
+  el.innerHTML = `同步狀態：<strong>${flag}</strong>｜房間：${ROOM_ID}｜在線：${onlineCount} 人｜${message}`;
+}
+
+function updateOnlineCount(count) {
+  onlineCount = Number.isFinite(count) ? count : 1;
+  setSyncStatus('等待操作', isSyncConnected);
 }
 
 function isFirebaseConfigComplete() {
@@ -358,7 +367,8 @@ function applyRemoteCellOwners(remoteCellOwners) {
 
   for (const [key, val] of Object.entries(remoteCellOwners)) {
     if (Object.prototype.hasOwnProperty.call(normalized, key)) {
-      normalized[key] = PLAYERS.some(p => p.id === val) ? val : null;
+      const parsed = Number(val);
+      normalized[key] = PLAYERS.some(p => p.id === parsed) ? parsed : null;
     }
   }
 
@@ -378,21 +388,45 @@ function initRealtimeSync() {
   try {
     if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
     dbRef = firebase.database().ref(`romeoRooms/${ROOM_ID}/state`);
-    setSyncStatus(`房間：${ROOM_ID}`, true);
+    roomPresenceRef = firebase.database().ref(`romeoRooms/${ROOM_ID}/presence`);
+    setSyncStatus('正在連線雲端同步', true);
+
+    roomPresenceRef.on('value', snap => {
+      const val = snap.val() || {};
+      const count = Object.keys(val).length;
+      updateOnlineCount(Math.max(1, count));
+    });
+
+    const connectedRef = firebase.database().ref('.info/connected');
+    connectedRef.on('value', snap => {
+      const connected = snap.val() === true;
+      if (!connected) {
+        setSyncStatus('與伺服器中斷，等待重連', false);
+        return;
+      }
+
+      const meRef = roomPresenceRef.child(CLIENT_ID);
+      meRef.onDisconnect().remove();
+      meRef.set({ onlineAt: firebase.database.ServerValue.TIMESTAMP });
+      setSyncStatus('已連線，格子會即時同步', true);
+    });
 
     dbRef.on('value', snap => {
       const data = snap.val();
       if (!data || !data.cellOwners) return;
       if (data.updatedBy === CLIENT_ID) return;
       applyRemoteCellOwners(data.cellOwners);
+      setSyncStatus('收到其他使用者更新', true);
     });
 
     dbRef.once('value').then(snap => {
       if (snap.exists()) {
         const data = snap.val();
         if (data?.cellOwners) applyRemoteCellOwners(data.cellOwners);
+        setSyncStatus('已載入雲端狀態', true);
       } else {
         publishStateToCloud();
+        setSyncStatus('已建立新房間狀態', true);
       }
     });
   } catch {
