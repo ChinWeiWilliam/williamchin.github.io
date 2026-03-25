@@ -135,6 +135,17 @@
       transition: border-color .2s;
     }
 
+    .sync-note {
+      margin-top: 10px;
+      font-size: 12px;
+      color: #666;
+      text-align: center;
+      line-height: 1.5;
+      word-break: break-word;
+    }
+
+    .sync-note strong { color: #333; }
+
     /* ── 重置按鈕 ── */
     .actions { margin-top: 14px; }
 
@@ -220,6 +231,7 @@
   <div id="gridContainer"></div>
 
   <div class="status-bar" id="statusBar">請先選擇玩家</div>
+  <div class="sync-note" id="syncNote">同步狀態：<strong>未啟用</strong></div>
 
   <div class="actions">
     <button class="reset-btn" id="resetBtn">🔄 重置遊戲</button>
@@ -233,6 +245,8 @@
   <div class="test-results" id="testResults"></div>
 </div>
 
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-database-compat.js"></script>
 <script>
 // ══════════════════════════════════════════════
 //  設定
@@ -246,12 +260,36 @@ const PLAYERS = [
 const ROWS = 10;
 const COLS = 4;
 
+// Firebase 設定：請改成你自己的專案資訊。
+// 若留空，頁面會自動退回「僅本機」模式。
+const FIREBASE_CONFIG = {
+  apiKey: '',
+  authDomain: '',
+  databaseURL: '',
+  projectId: '',
+  storageBucket: '',
+  messagingSenderId: '',
+  appId: ''
+};
+
+const ROOM_ID = new URLSearchParams(window.location.search).get('room') || 'default';
+const CLIENT_ID = (() => {
+  const key = 'romeo-client-id';
+  const exist = localStorage.getItem(key);
+  if (exist) return exist;
+  const id = (window.crypto?.randomUUID?.() || `client-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  localStorage.setItem(key, id);
+  return id;
+})();
+
 // ══════════════════════════════════════════════
 //  狀態
 // ══════════════════════════════════════════════
 let currentPlayer = null;  // 目前選中的玩家 id（或 null）
 let cellOwners    = {};    // { "row-col": playerId | null }
 let playerCells   = {};    // { playerId: "row-col" | null }
+let dbRef         = null;
+let isApplyingRemoteUpdate = false;
 
 /** 初始化 / 重置所有狀態（不更新 UI） */
 function initState() {
@@ -264,6 +302,102 @@ function initState() {
     }
   }
   for (const p of PLAYERS) playerCells[p.id] = {};
+}
+
+function rebuildPlayerCellsFromOwners() {
+  const next = {};
+  for (const p of PLAYERS) next[p.id] = {};
+
+  for (const [key, owner] of Object.entries(cellOwners)) {
+    if (!owner || !next[owner]) continue;
+    const [rowText, colText] = key.split('-');
+    const row = Number(rowText);
+    const col = Number(colText);
+    if (Number.isNaN(row) || Number.isNaN(col)) continue;
+    next[owner][row] = col;
+  }
+
+  playerCells = next;
+}
+
+function getSyncStatusElement() {
+  return document.getElementById('syncNote');
+}
+
+function setSyncStatus(message, isConnected) {
+  const el = getSyncStatusElement();
+  if (!el) return;
+  const flag = isConnected ? '已連線' : '未連線';
+  el.innerHTML = `同步狀態：<strong>${flag}</strong>｜${message}`;
+}
+
+function isFirebaseConfigComplete() {
+  return Object.values(FIREBASE_CONFIG).every(v => typeof v === 'string' && v.trim() !== '');
+}
+
+function publishStateToCloud() {
+  if (!dbRef || isApplyingRemoteUpdate) return;
+  dbRef.set({
+    cellOwners,
+    updatedAt: Date.now(),
+    updatedBy: CLIENT_ID
+  }).catch(() => {
+    setSyncStatus('同步失敗，請檢查 Firebase 權限與設定', false);
+  });
+}
+
+function applyRemoteCellOwners(remoteCellOwners) {
+  if (!remoteCellOwners || typeof remoteCellOwners !== 'object') return;
+
+  const normalized = {};
+  for (let r = 1; r <= ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      normalized[`${r}-${c}`] = null;
+    }
+  }
+
+  for (const [key, val] of Object.entries(remoteCellOwners)) {
+    if (Object.prototype.hasOwnProperty.call(normalized, key)) {
+      normalized[key] = PLAYERS.some(p => p.id === val) ? val : null;
+    }
+  }
+
+  isApplyingRemoteUpdate = true;
+  cellOwners = normalized;
+  rebuildPlayerCellsFromOwners();
+  refreshUI();
+  isApplyingRemoteUpdate = false;
+}
+
+function initRealtimeSync() {
+  if (!isFirebaseConfigComplete()) {
+    setSyncStatus('未填 Firebase 設定，使用本機模式', false);
+    return;
+  }
+
+  try {
+    if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
+    dbRef = firebase.database().ref(`romeoRooms/${ROOM_ID}/state`);
+    setSyncStatus(`房間：${ROOM_ID}`, true);
+
+    dbRef.on('value', snap => {
+      const data = snap.val();
+      if (!data || !data.cellOwners) return;
+      if (data.updatedBy === CLIENT_ID) return;
+      applyRemoteCellOwners(data.cellOwners);
+    });
+
+    dbRef.once('value').then(snap => {
+      if (snap.exists()) {
+        const data = snap.val();
+        if (data?.cellOwners) applyRemoteCellOwners(data.cellOwners);
+      } else {
+        publishStateToCloud();
+      }
+    });
+  } catch {
+    setSyncStatus('Firebase 初始化失敗，使用本機模式', false);
+  }
 }
 
 // ══════════════════════════════════════════════
@@ -381,11 +515,13 @@ function onCellClick(row, col) {
   }
 
   refreshUI();
+  publishStateToCloud();
 }
 
 function resetGame() {
   initState();
   refreshUI();
+  publishStateToCloud();
 }
 
 // ══════════════════════════════════════════════
@@ -472,7 +608,7 @@ function runTests() {
   assert('所有格子初始為空',
     Object.values(cellOwners).every(v => v === null));
   assert('所有玩家初始未佔格',
-    PLAYERS.every(p => playerCells[p.id] === null));
+    PLAYERS.every(p => Object.keys(playerCells[p.id]).length === 0));
   assert('初始無選中玩家', currentPlayer === null);
   assert(`格子總數正確（${ROWS * COLS} 格）`,
     Object.keys(cellOwners).length === ROWS * COLS);
@@ -588,7 +724,7 @@ function runTests() {
   assert('重置後所有格子為空',
     Object.values(cellOwners).every(v => v === null));
   assert('重置後所有玩家格子記錄清空',
-    PLAYERS.every(p => playerCells[p.id] === null));
+    PLAYERS.every(p => Object.keys(playerCells[p.id]).length === 0));
   assert('重置後無選中玩家', currentPlayer === null);
 
   // ═══ 還原遊戲狀態 ════════════════════════════
@@ -613,6 +749,7 @@ function runTests() {
 // ══════════════════════════════════════════════
 initState();
 buildUI();
+initRealtimeSync();
 </script>
 </body>
 </html>
