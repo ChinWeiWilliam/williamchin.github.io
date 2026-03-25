@@ -281,6 +281,14 @@ const CLIENT_ID = (() => {
   localStorage.setItem(key, id);
   return id;
 })();
+const SESSION_ID = (() => {
+  const key = 'romeo-session-id';
+  const exist = sessionStorage.getItem(key);
+  if (exist) return exist;
+  const id = (window.crypto?.randomUUID?.() || `session-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  sessionStorage.setItem(key, id);
+  return id;
+})();
 
 // ══════════════════════════════════════════════
 //  狀態
@@ -293,6 +301,7 @@ let roomPresenceRef = null;
 let isApplyingRemoteUpdate = false;
 let onlineCount = 1;
 let isSyncConnected = false;
+let lastResetAt = 0;
 
 /** 初始化 / 重置所有狀態（不更新 UI） */
 function initState() {
@@ -349,9 +358,23 @@ function publishStateToCloud() {
   dbRef.set({
     cellOwners,
     updatedAt: Date.now(),
-    updatedBy: CLIENT_ID
+    updatedBy: SESSION_ID,
+    resetAt: lastResetAt || null
   }).catch(() => {
     setSyncStatus('同步失敗，請檢查 Firebase 權限與設定', false);
+  });
+}
+
+function publishResetToCloud() {
+  if (!dbRef || isApplyingRemoteUpdate) return;
+  lastResetAt = Date.now();
+  dbRef.set({
+    cellOwners,
+    updatedAt: lastResetAt,
+    updatedBy: SESSION_ID,
+    resetAt: lastResetAt
+  }).catch(() => {
+    setSyncStatus('重置同步失敗，請檢查 Firebase 權限與設定', false);
   });
 }
 
@@ -405,16 +428,25 @@ function initRealtimeSync() {
         return;
       }
 
-      const meRef = roomPresenceRef.child(CLIENT_ID);
+      const meRef = roomPresenceRef.child(SESSION_ID);
       meRef.onDisconnect().remove();
-      meRef.set({ onlineAt: firebase.database.ServerValue.TIMESTAMP });
+      meRef.set({
+        clientId: CLIENT_ID,
+        onlineAt: firebase.database.ServerValue.TIMESTAMP
+      });
       setSyncStatus('已連線，格子會即時同步', true);
     });
 
     dbRef.on('value', snap => {
       const data = snap.val();
       if (!data || !data.cellOwners) return;
-      if (data.updatedBy === CLIENT_ID) return;
+
+      const remoteResetAt = Number(data.resetAt || 0);
+      if (remoteResetAt > lastResetAt) {
+        lastResetAt = remoteResetAt;
+      }
+
+      if (data.updatedBy === SESSION_ID) return;
       applyRemoteCellOwners(data.cellOwners);
       setSyncStatus('收到其他使用者更新', true);
     });
@@ -422,6 +454,7 @@ function initRealtimeSync() {
     dbRef.once('value').then(snap => {
       if (snap.exists()) {
         const data = snap.val();
+        lastResetAt = Number(data?.resetAt || 0);
         if (data?.cellOwners) applyRemoteCellOwners(data.cellOwners);
         setSyncStatus('已載入雲端狀態', true);
       } else {
@@ -555,7 +588,7 @@ function onCellClick(row, col) {
 function resetGame() {
   initState();
   refreshUI();
-  publishStateToCloud();
+  publishResetToCloud();
 }
 
 // ══════════════════════════════════════════════
