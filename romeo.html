@@ -281,6 +281,7 @@ const FIREBASE_CONFIG = {
 };
 
 const ROOM_ID = new URLSearchParams(window.location.search).get('room') || 'default';
+const BOUND_PLAYER_KEY = 'romeo-bound-player';
 const CLIENT_ID = (() => {
   const key = 'romeo-client-id';
   const exist = localStorage.getItem(key);
@@ -313,7 +314,7 @@ const USER_CODE = (() => {
 // ══════════════════════════════════════════════
 //  狀態
 // ══════════════════════════════════════════════
-let currentPlayer = null;  // 目前選中的玩家 id（或 null）
+let currentPlayer = loadBoundPlayer();  // 目前綁定的玩家 id（或 null）
 let cellOwners    = {};    // { "row-col": playerId | null }
 let playerCells   = {};    // { playerId: "row-col" | null }
 let colorLocks    = {};    // { playerId: userCode | null }
@@ -326,19 +327,45 @@ let lastResetAt = 0;
 let lastSeenUpdatedAt = 0;
 let statePollingTimer = null;
 
-/** 初始化 / 重置所有狀態（不更新 UI） */
-function initState() {
-  currentPlayer = null;
+function normalizePlayerId(value) {
+  const playerId = Number(value);
+  return PLAYERS.some(p => p.id === playerId) ? playerId : null;
+}
+
+function loadBoundPlayer() {
+  return normalizePlayerId(sessionStorage.getItem(BOUND_PLAYER_KEY));
+}
+
+function setBoundPlayer(playerId) {
+  currentPlayer = normalizePlayerId(playerId);
+  if (currentPlayer === null) {
+    sessionStorage.removeItem(BOUND_PLAYER_KEY);
+    return;
+  }
+  sessionStorage.setItem(BOUND_PLAYER_KEY, String(currentPlayer));
+}
+
+function resetBoardState() {
   cellOwners    = {};
   playerCells   = {};
-  colorLocks    = {};
   for (let r = 1; r <= ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
       cellOwners[`${r}-${c}`] = null;
     }
   }
   for (const p of PLAYERS) playerCells[p.id] = {};
+}
+
+function resetColorLocks() {
+  colorLocks = {};
   for (const p of PLAYERS) colorLocks[p.id] = null;
+}
+
+/** 初始化 / 重置所有狀態（不更新 UI） */
+function initState() {
+  setBoundPlayer(null);
+  resetBoardState();
+  resetColorLocks();
 }
 
 function rebuildPlayerCellsFromOwners() {
@@ -396,6 +423,33 @@ function isColorLockedByOther(playerId) {
 function acquireColorLock(playerId) {
   if (isColorLockedByOther(playerId)) return false;
   colorLocks[playerId] = USER_CODE;
+  return true;
+}
+
+function registerColorLockReleaseOnDisconnect(playerId) {
+  if (!dbRef || playerId === null) return;
+  firebase.database().ref(`romeoRooms/${ROOM_ID}/state/colorLocks/${playerId}`).onDisconnect().remove();
+}
+
+function bindPlayer(playerId) {
+  if (currentPlayer === playerId) return 'already-bound';
+  if (currentPlayer !== null) return 'bound-to-other';
+  if (!acquireColorLock(playerId)) return 'locked';
+  setBoundPlayer(playerId);
+  registerColorLockReleaseOnDisconnect(playerId);
+  return 'bound';
+}
+
+function ensureBoundPlayerLock() {
+  if (currentPlayer === null) return true;
+  if (isColorLockedByOther(currentPlayer)) {
+    setBoundPlayer(null);
+    return false;
+  }
+  const needsPublish = colorLocks[currentPlayer] !== USER_CODE;
+  acquireColorLock(currentPlayer);
+  registerColorLockReleaseOnDisconnect(currentPlayer);
+  if (needsPublish) publishStateToCloud();
   return true;
 }
 
@@ -467,12 +521,18 @@ function publishStateToCloud() {
 function publishResetToCloud() {
   if (!dbRef || isApplyingRemoteUpdate) return;
   lastResetAt = Date.now();
-  dbRef.set({
+  const locksToStore = {};
+  for (const [id, code] of Object.entries(colorLocks)) {
+    if (code) locksToStore[id] = code;
+  }
+  const payload = {
     claimedCells: [],
     updatedAt: lastResetAt,
     updatedBy: SESSION_ID,
     resetAt: lastResetAt
-  }).catch(() => {
+  };
+  if (Object.keys(locksToStore).length) payload.colorLocks = locksToStore;
+  dbRef.set(payload).catch(() => {
     setSyncStatus('重置同步失敗，請檢查 Firebase 權限與設定', false);
   });
 }
@@ -510,10 +570,7 @@ function applyRemoteSnapshot(data) {
     rebuildPlayerCellsFromOwners();
     // 同步顏色鎖定：只存非 null 的 lock，不存在的 key 視為解鎖
     colorLocks = normalizeColorLocks(data.colorLocks || {});
-    // 若本機選中的顏色剛被他人鎖定，強制取消選取
-    if (currentPlayer !== null && isColorLockedByOther(currentPlayer)) {
-      currentPlayer = null;
-    }
+    ensureBoundPlayerLock();
     refreshUI();
     isApplyingRemoteUpdate = false;
     return;
@@ -544,7 +601,9 @@ function consumeRemoteState(data) {
     (Array.isArray(data.claimedCells) && data.claimedCells.length === 0);
   if (hasNewReset && isEmpty) {
     isApplyingRemoteUpdate = true;
-    initState();
+    resetBoardState();
+    colorLocks = normalizeColorLocks(data.colorLocks || {});
+    ensureBoundPlayerLock();
     refreshUI();
     isApplyingRemoteUpdate = false;
     return true;
@@ -601,6 +660,7 @@ function initRealtimeSync() {
         clientId: CLIENT_ID,
         onlineAt: firebase.database.ServerValue.TIMESTAMP
       });
+      ensureBoundPlayerLock();
       setSyncStatus('已連線，格子會即時同步', true);
     });
 
@@ -615,8 +675,10 @@ function initRealtimeSync() {
       if (snap.exists()) {
         const data = snap.val();
         consumeRemoteState(data);
+        ensureBoundPlayerLock();
         setSyncStatus('已載入雲端狀態', true);
       } else {
+        ensureBoundPlayerLock();
         publishStateToCloud();
         setSyncStatus('已建立新房間狀態', true);
       }
@@ -682,7 +744,7 @@ function buildUI() {
  * @param {number} playerId
  */
 function selectPlayer(playerId) {
-  currentPlayer = (currentPlayer === playerId) ? null : playerId;
+  return bindPlayer(playerId);
 }
 
 /**
@@ -730,16 +792,18 @@ function onPlayerClick(playerId) {
     return;
   }
 
-  const prevPlayer = currentPlayer;
-  selectPlayer(playerId);
-
-  // 切換或取消選取時，釋放舊顏色的鎖定
-  if (prevPlayer !== null && prevPlayer !== currentPlayer) {
-    releaseColorLock(prevPlayer);
+  const result = bindPlayer(playerId);
+  if (result === 'already-bound') {
+    const name = PLAYERS.find(p => p.id === playerId)?.name;
+    setStatus(`${name} 已綁定，重置畫面後可直接繼續操作`, PLAYERS.find(p => p.id === playerId)?.color || null);
+    refreshUI();
+    return;
   }
-  // 鎖定新選中的顏色
-  if (currentPlayer !== null) {
-    acquireColorLock(currentPlayer);
+  if (result === 'bound-to-other') {
+    const name = PLAYERS.find(p => p.id === currentPlayer)?.name;
+    setStatus(`你目前已綁定 ${name}，離開此視窗前不可更換顏色`, null);
+    refreshUI();
+    return;
   }
 
   refreshUI();
@@ -765,7 +829,7 @@ function onCellClick(row, col) {
 }
 
 function resetGame() {
-  initState();
+  resetBoardState();
   refreshUI();
   publishResetToCloud();
   // 重置後 1 秒內主動拉取 3 次，確保重置已寫入雲端
@@ -854,6 +918,7 @@ function runTests() {
   // 測試執行期間暫存目前的遊戲狀態
   const snapshot = {
     currentPlayer,
+    colorLocks : JSON.parse(JSON.stringify(colorLocks)),
     cellOwners : JSON.parse(JSON.stringify(cellOwners)),
     playerCells: JSON.parse(JSON.stringify(playerCells))
   };
@@ -883,14 +948,15 @@ function runTests() {
   // ── 2. 玩家選取 ──────────────────────────────
   section('玩家選取功能');
 
-  selectPlayer(1);
+  const selectResult1 = selectPlayer(1);
+  assert('首次選取玩家 1 會綁定成功', selectResult1 === 'bound');
   assert('選取玩家 1 後 currentPlayer 為 1', currentPlayer === 1);
-  selectPlayer(1);
-  assert('再次點選同一玩家可取消選取', currentPlayer === null);
-  selectPlayer(2);
-  assert('選取玩家 2', currentPlayer === 2);
-  selectPlayer(3);
-  assert('切換至玩家 3（前一個自動取消）', currentPlayer === 3);
+  const selectResult2 = selectPlayer(1);
+  assert('再次點選同一玩家仍維持綁定', selectResult2 === 'already-bound');
+  assert('再次點選同一玩家不會取消綁定', currentPlayer === 1);
+  const selectResult3 = selectPlayer(2);
+  assert('綁定後不能切換到其他玩家', selectResult3 === 'bound-to-other');
+  assert('綁定後 currentPlayer 仍為 1', currentPlayer === 1);
 
   // ── 3. 基本佔格 ──────────────────────────────
   section('佔格基本功能');
@@ -992,10 +1058,17 @@ function runTests() {
     Object.values(cellOwners).every(v => v === null));
   assert('重置後所有玩家格子記錄清空',
     PLAYERS.every(p => Object.keys(playerCells[p.id]).length === 0));
-  assert('重置後無選中玩家', currentPlayer === null);
+  assert('完整初始化後會清除綁定玩家', currentPlayer === null);
+
+  currentPlayer = 2;
+  resetBoardState();
+  assert('僅重置盤面後仍保留綁定玩家', currentPlayer === 2);
+  assert('僅重置盤面後所有格子仍為空',
+    Object.values(cellOwners).every(v => v === null));
 
   // ═══ 還原遊戲狀態 ════════════════════════════
-  currentPlayer = snapshot.currentPlayer;
+  setBoundPlayer(snapshot.currentPlayer);
+  colorLocks = snapshot.colorLocks;
   Object.assign(cellOwners,  snapshot.cellOwners);
   Object.assign(playerCells, snapshot.playerCells);
   refreshUI();
@@ -1014,8 +1087,11 @@ function runTests() {
 // ══════════════════════════════════════════════
 //  啟動
 // ══════════════════════════════════════════════
-initState();
+resetBoardState();
+resetColorLocks();
+ensureBoundPlayerLock();
 buildUI();
+refreshUI();
 initRealtimeSync();
 </script>
 </body>
