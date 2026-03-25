@@ -74,6 +74,14 @@
       box-shadow: 0 8px 18px rgba(0, 0, 0, 0.35);
     }
 
+    .player-btn:disabled {
+      cursor: not-allowed;
+      filter: grayscale(0.25);
+      opacity: 0.7;
+      transform: none;
+      box-shadow: none;
+    }
+
     .player-btn .cell-tag {
       display: block;
       font-size: 11px;
@@ -289,6 +297,18 @@ const SESSION_ID = (() => {
   sessionStorage.setItem(key, id);
   return id;
 })();
+const USER_CODE = (() => {
+  const key = 'romeo-user-code';
+  const exist = sessionStorage.getItem(key);
+  if (exist) return exist;
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let code = 'U-';
+  for (let i = 0; i < 6; i++) {
+    code += chars[Math.floor(Math.random() * chars.length)];
+  }
+  sessionStorage.setItem(key, code);
+  return code;
+})();
 
 // ══════════════════════════════════════════════
 //  狀態
@@ -296,6 +316,7 @@ const SESSION_ID = (() => {
 let currentPlayer = null;  // 目前選中的玩家 id（或 null）
 let cellOwners    = {};    // { "row-col": playerId | null }
 let playerCells   = {};    // { playerId: "row-col" | null }
+let colorLocks    = {};    // { playerId: userCode | null }
 let dbRef         = null;
 let roomPresenceRef = null;
 let isApplyingRemoteUpdate = false;
@@ -310,12 +331,14 @@ function initState() {
   currentPlayer = null;
   cellOwners    = {};
   playerCells   = {};
+  colorLocks    = {};
   for (let r = 1; r <= ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
       cellOwners[`${r}-${c}`] = null;
     }
   }
   for (const p of PLAYERS) playerCells[p.id] = {};
+  for (const p of PLAYERS) colorLocks[p.id] = null;
 }
 
 function rebuildPlayerCellsFromOwners() {
@@ -343,12 +366,43 @@ function setSyncStatus(message, isConnected) {
   if (!el) return;
   if (typeof isConnected === 'boolean') isSyncConnected = isConnected;
   const flag = isConnected ? '已連線' : '未連線';
-  el.innerHTML = `同步狀態：<strong>${flag}</strong>｜房間：${ROOM_ID}｜在線：${onlineCount} 人｜${message}`;
+  el.innerHTML = `同步狀態：<strong>${flag}</strong>｜房間：${ROOM_ID}｜在線：${onlineCount} 人｜你的 ID：${USER_CODE}｜${message}`;
 }
 
 function updateOnlineCount(count) {
   onlineCount = Number.isFinite(count) ? count : 1;
   setSyncStatus('等待操作', isSyncConnected);
+}
+
+function normalizeColorLocks(input) {
+  const normalized = {};
+  for (const p of PLAYERS) normalized[p.id] = null;
+  if (!input || typeof input !== 'object') return normalized;
+
+  for (const [key, val] of Object.entries(input)) {
+    const playerId = Number(key);
+    if (!PLAYERS.some(p => p.id === playerId)) continue;
+    normalized[playerId] = typeof val === 'string' && val.trim() ? val.trim() : null;
+  }
+
+  return normalized;
+}
+
+function isColorLockedByOther(playerId) {
+  const locker = colorLocks[playerId];
+  return !!locker && locker !== USER_CODE;
+}
+
+function acquireColorLock(playerId) {
+  if (isColorLockedByOther(playerId)) return false;
+  colorLocks[playerId] = USER_CODE;
+  return true;
+}
+
+function releaseColorLock(playerId) {
+  if (colorLocks[playerId] === USER_CODE) {
+    colorLocks[playerId] = null;
+  }
 }
 
 function isFirebaseConfigComplete() {
